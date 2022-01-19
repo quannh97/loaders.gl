@@ -4,6 +4,8 @@ import TilesetTraverser from './tileset-traverser';
 import {getLodStatus} from '../helpers/i3s-lod';
 import TileHeader from '../tile-3d';
 import I3STileManager from './i3s-tile-manager';
+import {TILE_REFINEMENT} from "@loaders.gl/tiles";
+import {TILE3D_OPTIMIZATION_HINT} from "../../constants";
 
 export default class I3STilesetTraverser extends TilesetTraverser {
   private _tileManager: I3STileManager;
@@ -12,6 +14,58 @@ export default class I3STilesetTraverser extends TilesetTraverser {
     super(options);
     this._tileManager = new I3STileManager();
   }
+  //
+  compareDistanceToCamera(a, b) {
+    // Sort by farthest child first since this is going on a stack
+    return b._distanceToCamera === 0 && a._distanceToCamera === 0
+        ? b._centerZDepth - a._centerZDepth
+        : b._distanceToCamera - a._distanceToCamera;
+  }
+  updateTileVisibility(tile, frameState) {
+    super.updateTileVisibility(tile, frameState);
+
+    //  Optimization - if none of the tile's children are visible then this tile isn't visible
+    if (!tile.isVisibleAndInRequestVolume) {
+      return;
+    }
+
+    const hasChildren = tile.children.length > 0;
+    if (tile.hasTilesetContent && hasChildren) {
+      // Use the root tile's visibility instead of this tile's visibility.
+      // The root tile may be culled by the children bounds optimization in which
+      // case this tile should also be culled.
+      const firstChild = tile.children[0];
+      this.updateTileVisibility(firstChild, frameState);
+      tile._visible = firstChild._visible;
+      return;
+    }
+
+    if (this.meetsScreenSpaceErrorEarly(tile, frameState)) {
+      tile._visible = false;
+      return;
+    }
+
+    const replace = tile.refine === TILE_REFINEMENT.REPLACE;
+    const useOptimization =
+        tile._optimChildrenWithinParent === TILE3D_OPTIMIZATION_HINT.USE_OPTIMIZATION;
+    if (replace && useOptimization && hasChildren) {
+      if (!this.anyChildrenVisible(tile, frameState)) {
+        tile._visible = false;
+        return;
+      }
+    }
+  }
+
+  meetsScreenSpaceErrorEarly(tile, frameState) {
+    const {parent} = tile;
+    if (!parent || parent.hasTilesetContent || parent.refine !== TILE_REFINEMENT.ADD) {
+      return false;
+    }
+
+    // Use parent's geometric error with child's box to see if the tile already meet the SSE
+    return !this.shouldRefine(tile, frameState);
+  }
+  //
 
   shouldRefine(tile, frameState) {
     tile._lodJudge = getLodStatus(tile, frameState);
